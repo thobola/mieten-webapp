@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Borgmann"/>
+  <title>Mietenmanagement Borgmann</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;600;800&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; padding: 0; background: #f2f2f7; font-family: 'DM Sans', 'Segoe UI', sans-serif; overscroll-behavior: none; }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; }
+    ::-webkit-scrollbar { width: 0; height: 0; }
+    * { -webkit-font-smoothing: antialiased; }
+    @keyframes fadein { from { opacity:0; transform:translateY(2px); } to { opacity:1; transform:none; } }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState } = React;
+
+// ─── KONSTANTEN ───────────────────────────────────────────────────────────────
+const MONTHS = [“2025-03”,“2025-04”,“2025-05”];
+const ML = {“2025-03”:“Mrz”,“2025-04”:“Apr”,“2025-05”:“Mai”};
+
+const BLANK_FIN = { kaufpreis:0,eigenkapital:0,zinssatz:3.8,tilgung:2.0,
+hausgeldNichtUmlegbar:0,instandhaltung:0,verwaltung:0,versicherung:0,grundsteuer:0 };
+
+// NK-Monatswert berechnen (turnus = “monatlich” | “jaehrlich”)
+function nkMonat(val, turnus) {
+const v = parseFloat(val) || 0;
+return turnus === “jaehrlich” ? v / 12 : v;
+}
+
+// Gesamt-NK/Monat für ein Objekt
+function effNKMonat(p) {
+if (p.isWG) return p.wgZimmer.reduce((s, z) => {
+const nk = z.nebenkosten || {};
+return s + nkMonat(nk.hausgeld, nk.hausgeldTurnus)
++ nkMonat(nk.strom, nk.stromTurnus)
++ nkMonat(nk.internet, nk.internetTurnus)
++ nkMonat(nk.grundsteuer, nk.grundsteuerTurnus);
+}, 0);
+const nk = p.nebenkosten || {};
+return nkMonat(nk.hausgeld, nk.hausgeldTurnus)
++ nkMonat(nk.strom, nk.stromTurnus)
++ nkMonat(nk.internet, nk.internetTurnus)
++ nkMonat(nk.grundsteuer, nk.grundsteuerTurnus);
+}
+
+function effRent(p) {
+const parking = (p.parkplatz?.aktiv && p.status===“vermietet”) ? (parseFloat(p.parkplatz?.miete)||0) : 0;
+if (p.isWG) return p.wgZimmer.filter(z=>z.status===“vermietet”).reduce((s,z)=>s+(parseFloat(z.rent)||0),0) + parking;
+return (p.status===“vermietet” ? (parseFloat(p.rent)||0) : 0) + parking;
+}
+function parkingRent(p) {
+return (p.parkplatz?.aktiv && p.status===“vermietet”) ? (parseFloat(p.parkplatz?.miete)||0) : 0;
+}
+
+function calcFin(f, rent) {
+const dar = Math.max(0,(f.kaufpreis||0)-(f.eigenkapital||0));
+const zins = dar*((f.zinssatz||0)/100)/12;
+const tilg = dar*((f.tilgung||0)/100)/12;
+const kd = zins+tilg;
+const nuk = (f.hausgeldNichtUmlegbar||0);
+const cf = rent-kd-nuk;
+const brutto = f.kaufpreis ? rent*12/f.kaufpreis*100 : 0;
+const ekr = f.eigenkapital ? cf*12/f.eigenkapital*100 : 0;
+return {dar,zins,tilg,kd,nuk,cf,brutto,ekr};
+}
+
+function fmt(v,sign=false){ const r=Math.round(v); return (sign&&r>0?”+”:””)+r.toLocaleString(“de-DE”)+” €”; }
+
+// ─── SAMPLE DATA ──────────────────────────────────────────────────────────────
+const initProps = [
+{ id:1, name:“Bergstraße 12”, address:“Bergstraße 12, 2.OG”, city:“München”,
+size:78, rooms:3, status:“vermietet”, isWG:false,
+tenant:“Maria Huber”, tenantSince:“2022-03-01”, rent:1250,
+nebenkosten:{ hausgeld:180, hausgeldTurnus:“monatlich”, strom:780, stromTurnus:“jaehrlich”, internet:35, internetTurnus:“monatlich” },
+payments:[{month:“2025-03”,rent:true,nebenkosten:true},{month:“2025-04”,rent:true,nebenkosten:true},{month:“2025-05”,rent:true,nebenkosten:false}],
+notes:“Heizung gewartet März 2025”,
+finance:{kaufpreis:380000,eigenkapital:80000,zinssatz:3.8,tilgung:2.0,hausgeldNichtUmlegbar:80,instandhaltung:50,verwaltung:30,versicherung:20,grundsteuer:45},
+parkplatz:{aktiv:false,miete:0}, wgZimmer:[] },
+{ id:2, name:“Schillerplatz 5”, address:“Schillerplatz 5, EG”, city:“München”,
+size:95, rooms:4, status:“vermietet”, isWG:true,
+tenant:””, tenantSince:””, rent:0,
+nebenkosten:{ hausgeld:220, hausgeldTurnus:“monatlich”, strom:0, stromTurnus:“monatlich”, internet:50, internetTurnus:“monatlich” },
+payments:[], notes:“WG, 3/4 vermietet”,
+finance:{kaufpreis:450000,eigenkapital:100000,zinssatz:4.1,tilgung:2.0,hausgeldNichtUmlegbar:90,instandhaltung:70,verwaltung:40,versicherung:25,grundsteuer:55},
+wgZimmer:[
+{id:101,name:“Zimmer 1”,size:22,moebliert:“moebliert”,tenant:“Jonas Weber”,tenantSince:“2023-05-01”,rent:650,
+nebenkosten:{hausgeld:55,hausgeldTurnus:“monatlich”,strom:30,stromTurnus:“monatlich”,internet:17,internetTurnus:“monatlich”},
+payments:[{month:“2025-03”,rent:true,nebenkosten:true},{month:“2025-04”,rent:true,nebenkosten:true},{month:“2025-05”,rent:true,nebenkosten:true}],status:“vermietet”},
+{id:102,name:“Zimmer 2”,size:18,moebliert:“unmoebliert”,tenant:“Lisa Maier”,tenantSince:“2024-01-01”,rent:580,
+nebenkosten:{hausgeld:55,hausgeldTurnus:“monatlich”,strom:300,stromTurnus:“jaehrlich”,internet:17,internetTurnus:“monatlich”},
+payments:[{month:“2025-03”,rent:true,nebenkosten:true},{month:“2025-04”,rent:true,nebenkosten:true},{month:“2025-05”,rent:false,nebenkosten:false}],status:“vermietet”},
+{id:103,name:“Zimmer 3”,size:20,moebliert:“teilmoebliert”,tenant:“Tom Becker”,tenantSince:“2022-09-01”,rent:610,
+nebenkosten:{hausgeld:55,hausgeldTurnus:“monatlich”,strom:28,stromTurnus:“monatlich”,internet:16,internetTurnus:“monatlich”},
+payments:[{month:“2025-03”,rent:true,nebenkosten:true},{month:“2025-04”,rent:true,nebenkosten:false},{month:“2025-05”,rent:true,nebenkosten:true}],status:“vermietet”},
+{id:104,name:“Zimmer 4”,size:19,moebliert:“unmoebliert”,tenant:””,tenantSince:””,rent:600,
+nebenkosten:{hausgeld:55,hausgeldTurnus:“monatlich”,strom:0,stromTurnus:“monatlich”,internet:0,internetTurnus:“monatlich”},
+payments:[],status:“leer”},
+], parkplatz:{aktiv:true,miete:80}},
+{ id:3, name:“Lindenweg 8”, address:“Lindenweg 8, 1.OG”, city:“Augsburg”,
+size:55, rooms:2, status:“leer”, isWG:false,
+tenant:””, tenantSince:””, rent:790,
+nebenkosten:{ hausgeld:1440, hausgeldTurnus:“jaehrlich”, strom:0, stromTurnus:“monatlich”, internet:0, internetTurnus:“monatlich” },
+payments:[], notes:“Renovierung geplant”,
+finance:{kaufpreis:220000,eigenkapital:50000,zinssatz:3.5,tilgung:2.5,hausgeldNichtUmlegbar:60,instandhaltung:35,verwaltung:20,versicherung:15,grundsteuer:28},
+parkplatz:{aktiv:false,miete:0}, wgZimmer:[] },
+];
+
+// ─── ATOMS ────────────────────────────────────────────────────────────────────
+const Badge = ({s}) => {
+const m={vermietet:[”#e8f5e9”,”#2e7d32”,“Vermietet”],leer:[”#fff3e0”,”#e65100”,“Leer”],instandhaltung:[”#fce4ec”,”#c62828”,“Wartung”]}[s]||[”#f5f5f5”,”#555”,s];
+return <span style={{background:m[0],color:m[1],borderRadius:20,padding:“3px 10px”,fontSize:11,fontWeight:700}}>{m[2]}</span>;
+};
+const Dot = ({ok}) => <span style={{width:8,height:8,borderRadius:“50%”,background:ok?”#4caf50”:”#ff7043”,display:“inline-block”,margin:“0 2px”}}/>;
+
+// Toggle-Style Turnus-Knopf
+const TurnusToggle = ({value, onChange}) => (
+
+  <div style={{display:"flex",borderRadius:8,overflow:"hidden",border:"1.5px solid #e0e0e0",width:"fit-content"}}>
+    {["monatlich","jaehrlich"].map(t=>(
+      <button key={t} onClick={()=>onChange(t)} style={{
+        padding:"5px 10px", fontSize:10, fontWeight:700, border:"none", cursor:"pointer",
+        background: value===t ? "#1a1a2e" : "#fff",
+        color: value===t ? "#fff" : "#999",
+        minWidth:52,
+      }}>{t==="monatlich"?"Mtl.":"Jährl."}</button>
+    ))}
+  </div>
+);
+
+// NK-Eingabe-Gruppe: Betrag + Turnus-Toggle nebeneinander
+function NKField({label, icon, val, turnus, onVal, onTurnus}) {
+const monatVal = nkMonat(val, turnus);
+return (
+<div style={{background:”#f8f8fb”,borderRadius:11,padding:“11px 12px”}}>
+<div style={{fontSize:11,color:”#888”,fontWeight:600,marginBottom:8}}>{icon} {label}</div>
+<div style={{display:“flex”,gap:8,alignItems:“center”,marginBottom:6}}>
+<div style={{position:“relative”,flex:1}}>
+<input type=“number” value={(val===0||val===“0”||val===null||val===undefined)?””:val} placeholder=“0” onChange={e=>onVal(e.target.value)}
+onFocus={e=>e.target.select()}
+style={{width:“100%”,padding:“8px 26px 8px 10px”,border:“1.5px solid #e8e8e8”,borderRadius:9,fontSize:14,fontFamily:“inherit”,background:”#fff”,boxSizing:“border-box”,outline:“none”}}/>
+<span style={{position:“absolute”,right:9,top:“50%”,transform:“translateY(-50%)”,color:”#bbb”,fontSize:11}}>€</span>
+</div>
+<TurnusToggle value={turnus} onChange={onTurnus}/>
+</div>
+{turnus===“jaehrlich” && parseFloat(val)>0 && (
+<div style={{fontSize:11,color:”#1565c0”,background:”#e3f2fd”,borderRadius:7,padding:“3px 8px”,display:“inline-block”}}>
+= {fmt(monatVal)}/Mo
+</div>
+)}
+</div>
+);
+}
+
+function Modal({children, onClose, title}) {
+return (
+<div onClick={onClose} style={{position:“fixed”,inset:0,background:“rgba(10,10,20,0.55)”,display:“flex”,alignItems:“flex-end”,justifyContent:“center”,zIndex:1000,backdropFilter:“blur(2px)”}}>
+<div onClick={e=>e.stopPropagation()} style={{background:”#fff”,borderRadius:“20px 20px 0 0”,padding:“20px 18px 32px”,width:“100%”,maxWidth:600,maxHeight:“92vh”,overflowY:“auto”,boxShadow:“0 -8px 40px rgba(0,0,0,0.2)”}}>
+{title && <div style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:16}}>
+<span style={{fontFamily:”‘Playfair Display’,serif”,fontSize:20,fontWeight:700}}>{title}</span>
+<button onClick={onClose} style={{background:”#f0f0f0”,border:“none”,borderRadius:“50%”,width:32,height:32,cursor:“pointer”,fontSize:16,display:“flex”,alignItems:“center”,justifyContent:“center”}}>✕</button>
+</div>}
+{children}
+</div>
+</div>
+);
+}
+
+const Btn = ({children,onClick,primary,danger,full,icon}) => (
+<button onClick={onClick} style={{
+padding:“11px 18px”, borderRadius:12, cursor:“pointer”, fontFamily:“inherit”,
+fontSize:14, fontWeight:700, display:“inline-flex”, alignItems:“center”, justifyContent:“center”, gap:6,
+width: full?“100%”:“auto”,
+background: primary?”#1a1a2e”:danger?”#fff3f0”:”#fff”,
+color: primary?”#fff”:danger?”#c62828”:”#1a1a2e”,
+border: primary?“none”:danger?“1.5px solid #ffd0c8”:“1.5px solid #e0e0e0”,
+WebkitTapHighlightColor:“transparent”,
+}}>{icon && <span>{icon}</span>}{children}</button>
+);
+
+function FI({label,value,onChange,type=“text”,suffix,full,placeholder}) {
+const displayVal = type===“number” ? ((value===0||value===“0”||value===null||value===undefined)?””:value) : (value??””);
+return (
+<div style={{gridColumn:full?“1/-1”:“auto”}}>
+<label style={{fontSize:11,color:”#888”,display:“block”,marginBottom:4,fontWeight:600}}>{label}</label>
+<div style={{position:“relative”}}>
+<input type={type} value={displayVal} placeholder={placeholder||(type===“number”?“0”:””)} onChange={e=>onChange(e.target.value)}
+onFocus={type===“number”?e=>e.target.select():undefined}
+style={{width:“100%”,padding:suffix?“11px 30px 11px 12px”:“11px 12px”,border:“1.5px solid #e8e8e8”,borderRadius:10,fontSize:15,fontFamily:“inherit”,background:”#fafafa”,boxSizing:“border-box”,outline:“none”}}/>
+{suffix&&<span style={{position:“absolute”,right:10,top:“50%”,transform:“translateY(-50%)”,color:”#bbb”,fontSize:12}}>{suffix}</span>}
+</div>
+</div>
+);
+}
+
+// ─── NK SECTION (wiederverwendbar für Objekt + WG-Zimmer) ────────────────────
+function NKSection({nk, onChange, label=“Nebenkosten”}) {
+const set = (k,v) => onChange({…nk,[k]:v});
+const totalMo = nkMonat(nk.hausgeld,nk.hausgeldTurnus)+nkMonat(nk.strom,nk.stromTurnus)+nkMonat(nk.internet,nk.internetTurnus)+nkMonat(nk.grundsteuer,nk.grundsteuerTurnus);
+return (
+<div>
+<div style={{fontWeight:700,fontSize:12,color:”#aaa”,textTransform:“uppercase”,letterSpacing:.5,marginBottom:10}}>{label}</div>
+<div style={{display:“flex”,flexDirection:“column”,gap:8}}>
+<NKField label=“Hausgeld” icon=“🏢” val={nk.hausgeld} turnus={nk.hausgeldTurnus||“monatlich”} onVal={v=>set(“hausgeld”,v)} onTurnus={v=>set(“hausgeldTurnus”,v)}/>
+<NKField label=“Strom” icon=“⚡” val={nk.strom} turnus={nk.stromTurnus||“monatlich”} onVal={v=>set(“strom”,v)} onTurnus={v=>set(“stromTurnus”,v)}/>
+<NKField label=“Internet” icon=“📡” val={nk.internet} turnus={nk.internetTurnus||“monatlich”} onVal={v=>set(“internet”,v)} onTurnus={v=>set(“internetTurnus”,v)}/>
+<NKField label=“Grundsteuer” icon=“🏛️” val={nk.grundsteuer} turnus={nk.grundsteuerTurnus||“jaehrlich”} onVal={v=>set(“grundsteuer”,v)} onTurnus={v=>set(“grundsteuerTurnus”,v)}/>
+</div>
+<div style={{marginTop:10,display:“flex”,justifyContent:“space-between”,background:”#1a1a2e”,color:”#fff”,borderRadius:10,padding:“10px 14px”}}>
+<span style={{fontSize:13}}>Gesamt / Monat</span>
+<span style={{fontWeight:800,fontSize:15}}>{fmt(totalMo)}</span>
+</div>
+</div>
+);
+}
+
+// ─── WG MODAL ─────────────────────────────────────────────────────────────────
+const BLANK_Z = (n) => ({
+id:Date.now()+Math.random(), name:`Zimmer ${n}`, size:””, moebliert:“unmoebliert”,
+status:“leer”, tenant:””, tenantSince:””, rent:””,
+nebenkosten:{hausgeld:””,hausgeldTurnus:“monatlich”,strom:””,stromTurnus:“monatlich”,internet:””,internetTurnus:“monatlich”},
+payments:[],
+});
+
+function WGModal({prop,onSave,onClose}) {
+const [zimmer,setZimmer] = useState(
+prop.wgZimmer.length>0
+? prop.wgZimmer.map(z=>({…z,nebenkosten:{…z.nebenkosten}}))
+: [BLANK_Z(1)]
+);
+const [selId,setSelId] = useState(zimmer[0]?.id);
+const [tab,setTab] = useState(“mieter”); // “mieter”|“finanzen”
+const cur = zimmer.find(z=>z.id===selId)||zimmer[0];
+
+const setZ = (id,k,v)=>setZimmer(zs=>zs.map(z=>z.id===id?{…z,[k]:v}:z));
+const setNK = (id,nk)=>setZimmer(zs=>zs.map(z=>z.id===id?{…z,nebenkosten:nk}:z));
+
+const totalKalt = zimmer.reduce((s,z)=>s+(z.status===“vermietet”?parseFloat(z.rent)||0:0),0);
+const totalNK = zimmer.reduce((s,z)=>s+nkMonat(z.nebenkosten.hausgeld,z.nebenkosten.hausgeldTurnus)+nkMonat(z.nebenkosten.strom,z.nebenkosten.stromTurnus)+nkMonat(z.nebenkosten.internet,z.nebenkosten.internetTurnus),0);
+const vermietet = zimmer.filter(z=>z.status===“vermietet”).length;
+
+const addZ = ()=>{const nz=BLANK_Z(zimmer.length+1);setZimmer(zs=>[…zs,nz]);setSelId(nz.id);};
+const delZ = (id)=>{const r=zimmer.filter(z=>z.id!==id);setZimmer(r);setSelId(r[r.length-1]?.id);};
+
+const moebLabel = (m)=>m===“moebliert”?“möbliert”:m===“teilmoebliert”?“teilmöbl.”:“unmöbliert”;
+const moebColor = (m)=>m===“moebliert”?”#2e7d32”:m===“teilmoebliert”?”#e65100”:”#888”;
+
+return (
+<Modal onClose={onClose} title="🏠 WG-Zimmer">
+{/* Gesamt-Summary */}
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr 1fr”,gap:8,marginBottom:14,background:”#f0f7ff”,borderRadius:12,padding:“12px 14px”}}>
+{[[“Kaltmiete”,totalKalt,”#2e7d32”],[“Nebenkosten/Mo”,totalNK,”#e65100”],[“Warmmiete”,totalKalt+totalNK,”#1a1a2e”]].map(([l,v,c])=>(
+<div key={l} style={{textAlign:“center”}}>
+<div style={{fontSize:10,color:”#888”}}>{l}</div>
+<div style={{fontSize:15,fontWeight:800,color:c}}>{fmt(v)}</div>
+</div>
+))}
+</div>
+<div style={{fontSize:11,color:”#888”,textAlign:“center”,marginBottom:14}}>{vermietet}/{zimmer.length} Zimmer vermietet</div>
+
+```
+  {/* Zimmer-Tabs */}
+  <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:4,marginBottom:14}}>
+    {zimmer.map(z=>(
+      <button key={z.id} onClick={()=>setSelId(z.id)} style={{
+        flexShrink:0, padding:"8px 14px", borderRadius:10, border:"none", cursor:"pointer",
+        background:z.id===selId?"#1a1a2e":"#f0f0f5",
+        color:z.id===selId?"#fff":"#555", fontSize:13, fontWeight:700,
+        WebkitTapHighlightColor:"transparent",
+      }}>{z.name}</button>
+    ))}
+    <button onClick={addZ} style={{flexShrink:0,padding:"8px 14px",borderRadius:10,border:"1.5px dashed #ccc",background:"#fff",color:"#888",fontSize:13,cursor:"pointer"}}>+ Zimmer</button>
+  </div>
+
+  {cur && (
+    <div>
+      {/* Zimmer-Header */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <select value={cur.status} onChange={e=>setZ(cur.id,"status",e.target.value)}
+            style={{padding:"7px 12px",borderRadius:9,border:"1.5px solid #e0e0e0",fontSize:13,fontFamily:"inherit",fontWeight:700,background:"#fff"}}>
+            <option value="vermietet">Vermietet</option>
+            <option value="leer">Leer</option>
+          </select>
+          <span style={{fontSize:12,color:moebColor(cur.moebliert),background:"#f5f5f5",borderRadius:8,padding:"4px 10px",fontWeight:600}}>{moebLabel(cur.moebliert)}</span>
+        </div>
+        <button onClick={()=>delZ(cur.id)} style={{background:"#fff3f0",border:"1.5px solid #ffd0c8",borderRadius:9,padding:"7px 12px",cursor:"pointer",fontSize:13,color:"#c62828"}}>🗑️</button>
+      </div>
+
+      {/* Sub-Tabs */}
+      <div style={{display:"flex",background:"#f0f0f5",borderRadius:10,padding:3,marginBottom:14}}>
+        {[["mieter","👤 Mieter & Zimmer"],["finanzen","💶 Finanzen"]].map(([t,label])=>(
+          <button key={t} onClick={()=>setTab(t)} style={{flex:1,padding:"9px 0",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:700,background:tab===t?"#fff":"transparent",color:tab===t?"#1a1a2e":"#888",boxShadow:tab===t?"0 1px 4px rgba(0,0,0,0.1)":"none"}}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab==="mieter" && (
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10}}>
+            <FI label="Zimmerbezeichnung" value={cur.name} onChange={v=>setZ(cur.id,"name",v)}/>
+            <FI label="Größe" value={cur.size} onChange={v=>setZ(cur.id,"size",v)} type="number" suffix="m²"/>
+          </div>
+          <div>
+            <label style={{fontSize:11,color:"#888",display:"block",marginBottom:4,fontWeight:600}}>Möblierung</label>
+            <div style={{display:"flex",gap:8}}>
+              {[["unmoebliert","Unmöbliert"],["teilmoebliert","Teilmöbliert"],["moebliert","Möbliert"]].map(([v,label])=>(
+                <button key={v} onClick={()=>setZ(cur.id,"moebliert",v)} style={{
+                  flex:1,padding:"9px 6px",borderRadius:10,border:`1.5px solid ${cur.moebliert===v?"#1a1a2e":"#e0e0e0"}`,
+                  background:cur.moebliert===v?"#1a1a2e":"#fff",color:cur.moebliert===v?"#fff":"#555",
+                  fontSize:12,fontWeight:700,cursor:"pointer",
+                }}>{label}</button>
+              ))}
+            </div>
+          </div>
+          <FI label="Mietername" value={cur.tenant} onChange={v=>setZ(cur.id,"tenant",v)} placeholder={cur.status==="leer"?"— Leer —":"Name"}/>
+          <FI label="Mietverhältnis seit" value={cur.tenantSince} onChange={v=>setZ(cur.id,"tenantSince",v)} type="date"/>
+          {cur.tenantSince && (
+            <div style={{fontSize:12,color:"#888",background:"#f8f8fb",borderRadius:9,padding:"8px 12px"}}>
+              Mietdauer: <strong>{Math.floor((new Date()-new Date(cur.tenantSince))/1000/60/60/24/30)} Monate</strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab==="finanzen" && (
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <FI label="Kaltmiete" value={cur.rent} onChange={v=>setZ(cur.id,"rent",v)} type="number" suffix="€"/>
+          {/* NK-Modus */}
+          <div>
+            <label style={{fontSize:11,color:"#888",display:"block",marginBottom:6,fontWeight:600}}>Nebenkosten-Abrechnung</label>
+            <div style={{display:"flex",gap:8}}>
+              {[["pauschale","💶 Pauschale NK"],["abrechnung","📋 Nach Abrechnung"]].map(([v,label])=>(
+                <button key={v} onClick={()=>setZ(cur.id,"nkModus",v)} style={{
+                  flex:1, padding:"10px 8px", borderRadius:11, cursor:"pointer", fontSize:13, fontWeight:700,
+                  border:`1.5px solid ${(cur.nkModus||"pauschale")===v?"#1a1a2e":"#e0e0e0"}`,
+                  background:(cur.nkModus||"pauschale")===v?"#1a1a2e":"#fff",
+                  color:(cur.nkModus||"pauschale")===v?"#fff":"#555",
+                }}>{label}</button>
+              ))}
+            </div>
+            {(cur.nkModus||"pauschale")==="abrechnung" && (
+              <div style={{marginTop:8,background:"#fff3e0",borderRadius:9,padding:"9px 12px",fontSize:12,color:"#e65100"}}>
+                ℹ️ Betriebskosten werden jährlich abgerechnet — hier Vorauszahlungen eintragen.
+              </div>
+            )}
+          </div>
+          <NKSection nk={cur.nebenkosten} onChange={nk=>setNK(cur.id,nk)} label={(cur.nkModus||"pauschale")==="abrechnung"?"NK-Vorauszahlung":"Nebenkosten (Pauschale)"}/>
+          {/* Zimmer-Summierung */}
+          {(parseFloat(cur.rent)||0) > 0 && (
+            <div style={{background:"#e8f5e9",borderRadius:11,padding:"12px 14px"}}>
+              <div style={{fontSize:11,color:"#555",fontWeight:600,marginBottom:8}}>Zimmer-Zusammenfassung</div>
+              {(()=>{
+                const k=parseFloat(cur.rent)||0;
+                const nk=nkMonat(cur.nebenkosten.hausgeld,cur.nebenkosten.hausgeldTurnus)+nkMonat(cur.nebenkosten.strom,cur.nebenkosten.stromTurnus)+nkMonat(cur.nebenkosten.internet,cur.nebenkosten.internetTurnus);
+                const pqm=cur.size?(k/parseFloat(cur.size)).toFixed(2):null;
+                return (
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+                    {[["Kalt",k,"#2e7d32"],["NK/Mo",nk,"#e65100"],["Warm",k+nk,"#1a1a2e"]].map(([l,v,c])=>(
+                      <div key={l} style={{background:"#fff",borderRadius:9,padding:"9px 10px",textAlign:"center"}}>
+                        <div style={{fontSize:10,color:"#aaa"}}>{l}</div>
+                        <div style={{fontSize:14,fontWeight:800,color:c}}>{fmt(v)}</div>
+                      </div>
+                    ))}
+                    {pqm && <div style={{gridColumn:"1/-1",textAlign:"center",fontSize:11,color:"#888"}}>{pqm} €/m²</div>}
+                    <div style={{gridColumn:"1/-1",textAlign:"center"}}>
+                      <span style={{fontSize:11,background:(cur.nkModus||"pauschale")==="abrechnung"?"#fff3e0":"#e3f2fd",color:(cur.nkModus||"pauschale")==="abrechnung"?"#e65100":"#1565c0",borderRadius:8,padding:"3px 10px",fontWeight:700}}>
+                        {(cur.nkModus||"pauschale")==="abrechnung"?"📋 Nach Abrechnung":"💶 Pauschale NK"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )}
+
+  <div style={{marginTop:20,display:"flex",gap:10}}>
+    <Btn full primary onClick={()=>{onSave(zimmer);onClose();}}>💾 Speichern</Btn>
+  </div>
+</Modal>
+```
+
+);
+}
+
+// ─── FINANCE MODAL ────────────────────────────────────────────────────────────
+function FinanceModal({prop,onSave,onClose}) {
+const [f,setF] = useState({…BLANK_FIN,…prop.finance});
+const set=(k,v)=>setF(p=>({…p,[k]:parseFloat(v)||0}));
+const rent = effRent(prop);
+const c = calcFin(f,rent);
+
+return (
+<Modal onClose={onClose} title="📊 Rentabilität">
+<div style={{background:”#e8f5e9”,borderRadius:11,padding:“11px 14px”,marginBottom:16}}>
+<div style={{fontSize:11,color:”#555”}}>Mieteinnahmen / Monat</div>
+<div style={{fontSize:24,fontWeight:800,color:”#2e7d32”}}>{fmt(rent)}</div>
+</div>
+
+```
+  <div style={{fontWeight:700,fontSize:12,color:"#aaa",textTransform:"uppercase",letterSpacing:.5,marginBottom:10}}>Finanzierung</div>
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+    <FI label="Kaufpreis (€)" value={f.kaufpreis} onChange={v=>set("kaufpreis",v)} type="number"/>
+    <FI label="Eigenkapital (€)" value={f.eigenkapital} onChange={v=>set("eigenkapital",v)} type="number"/>
+    <FI label="Zinssatz" value={f.zinssatz} onChange={v=>set("zinssatz",v)} type="number" suffix="%"/>
+    <FI label="Tilgung" value={f.tilgung} onChange={v=>set("tilgung",v)} type="number" suffix="%"/>
+  </div>
+
+  <div style={{fontWeight:700,fontSize:12,color:"#aaa",textTransform:"uppercase",letterSpacing:.5,marginBottom:10}}>Nicht umlegbare Kosten / Mo</div>
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+    {[["hausgeldNichtUmlegbar","🏢 Nicht umlegbares Hausgeld"]].map(([k,label])=>(
+      <FI key={k} label={`${label} (€)`} value={f[k]} onChange={v=>set(k,v)} type="number"/>
+    ))}
+  </div>
+
+  {/* Ergebnis */}
+  <div style={{background:"#f8f8fb",borderRadius:12,padding:"14px 15px",marginBottom:16}}>
+    <div style={{fontWeight:700,fontSize:12,color:"#aaa",textTransform:"uppercase",letterSpacing:.5,marginBottom:10}}>Auswertung / Monat</div>
+    {[
+      ["Kapitaldienst (KD)",c.kd,"#c62828"],
+      ["Nicht umlegb. Kosten (NUK)",c.nuk,"#e65100"],
+      ["Gesamtkosten",c.kd+c.nuk,"#555",true],
+      ["Cashflow",c.cf,c.cf>=0?"#2e7d32":"#c62828",true,true],
+    ].map(([label,val,col,bold,sign])=>(
+      <div key={label} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #eee"}}>
+        <span style={{fontSize:13,color:"#555",fontWeight:bold?700:400}}>{label}</span>
+        <span style={{fontSize:14,fontWeight:bold?800:600,color:col}}>{fmt(val,sign)}</span>
+      </div>
+    ))}
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:12}}>
+      {[
+        ["Bruttorendite",c.brutto.toFixed(2)+" %","#1565c0"],
+        ["EK-Rendite p.a.",c.ekr.toFixed(2)+" %",c.ekr>=0?"#2e7d32":"#c62828"],
+      ].map(([l,v,c])=>(
+        <div key={l} style={{background:"#fff",borderRadius:9,padding:"10px 12px"}}>
+          <div style={{fontSize:10,color:"#aaa"}}>{l}</div>
+          <div style={{fontSize:18,fontWeight:800,color:c}}>{v}</div>
+        </div>
+      ))}
+    </div>
+  </div>
+
+  <Btn full primary onClick={()=>{onSave(f);onClose();}}>💾 Speichern</Btn>
+</Modal>
+```
+
+);
+}
+
+// ─── PROP FORM MODAL ─────────────────────────────────────────────────────────
+function PropForm({initial,onSave,onCancel}) {
+const blank = {name:””,address:””,city:””,size:””,rooms:””,tenant:””,tenantSince:””,rent:””,moebliert:“unmoebliert”,status:“leer”,isWG:false,notes:””,
+nebenkosten:{hausgeld:””,hausgeldTurnus:“monatlich”,strom:””,stromTurnus:“monatlich”,internet:””,internetTurnus:“monatlich”,grundsteuer:””,grundsteuerTurnus:“jaehrlich”},
+finance:{…BLANK_FIN},parkplatz:{aktiv:false,miete:””},wgZimmer:[]};
+const [f,setF] = useState(initial?{…initial,nebenkosten:{…initial.nebenkosten}}:blank);
+const set=(k,v)=>setF(p=>({…p,[k]:v}));
+
+return (
+<div>
+<div style={{fontFamily:”‘Playfair Display’,serif”,fontSize:20,fontWeight:700,marginBottom:16}}>{initial?“Objekt bearbeiten”:“Neues Objekt”}</div>
+<div style={{display:“flex”,flexDirection:“column”,gap:12}}>
+<FI label=“Bezeichnung” value={f.name} onChange={v=>set(“name”,v)}/>
+<FI label=“Adresse” value={f.address} onChange={v=>set(“address”,v)}/>
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:10}}>
+<FI label=“Stadt” value={f.city} onChange={v=>set(“city”,v)}/>
+<FI label=“Größe (m²)” value={f.size} onChange={v=>set(“size”,v)} type=“number”/>
+<FI label=“Zimmer” value={f.rooms} onChange={v=>set(“rooms”,v)} type=“number”/>
+<div>
+<label style={{fontSize:11,color:”#888”,display:“block”,marginBottom:4,fontWeight:600}}>Status</label>
+<select value={f.status} onChange={e=>set(“status”,e.target.value)} style={{width:“100%”,padding:“11px 12px”,border:“1.5px solid #e8e8e8”,borderRadius:10,fontSize:15,fontFamily:“inherit”,background:”#fafafa”}}>
+<option value="vermietet">Vermietet</option><option value="leer">Leer</option><option value="instandhaltung">Wartung</option>
+</select>
+</div>
+</div>
+{/* Parkplatz Toggle */}
+<div onClick={()=>set(“parkplatz”,{…( f.parkplatz||{}),aktiv:!(f.parkplatz?.aktiv)})} style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,background:”#f8f8fb”,borderRadius:12,padding:“13px 15px”,cursor:“pointer”,border:`1.5px solid ${f.parkplatz?.aktiv?"#1565c0":"#e8e8e8"}`}}>
+<div>
+<div style={{fontWeight:700,fontSize:14}}>🚗 Parkplatz mitvermieten</div>
+<div style={{fontSize:12,color:”#888”,marginTop:2}}>Zusätzliche monatliche Mieteinnahme</div>
+</div>
+<div style={{width:44,height:26,borderRadius:13,background:f.parkplatz?.aktiv?”#1565c0”:”#ddd”,position:“relative”,transition:“background .2s”}}>
+<div style={{position:“absolute”,width:20,height:20,borderRadius:“50%”,background:”#fff”,top:3,left:f.parkplatz?.aktiv?21:3,transition:“left .2s”,boxShadow:“0 1px 3px rgba(0,0,0,0.2)”}}/>
+</div>
+</div>
+{f.parkplatz?.aktiv && (
+<FI label=“🚗 Parkplatz-Miete / Monat” value={f.parkplatz?.miete} onChange={v=>set(“parkplatz”,{…f.parkplatz,miete:v})} type=“number” suffix=“€”/>
+)}
+{/* WG Toggle */}
+<div onClick={()=>set(“isWG”,!f.isWG)} style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,background:”#f8f8fb”,borderRadius:12,padding:“13px 15px”,cursor:“pointer”,border:`1.5px solid ${f.isWG?"#1a1a2e":"#e8e8e8"}`}}>
+<div>
+<div style={{fontWeight:700,fontSize:14}}>Als WG verwalten</div>
+<div style={{fontSize:12,color:”#888”,marginTop:2}}>Einzelne Zimmer mit eigenen Mietern</div>
+</div>
+<div style={{width:44,height:26,borderRadius:13,background:f.isWG?”#1a1a2e”:”#ddd”,position:“relative”,transition:“background .2s”}}>
+<div style={{position:“absolute”,width:20,height:20,borderRadius:“50%”,background:”#fff”,top:3,left:f.isWG?21:3,transition:“left .2s”,boxShadow:“0 1px 3px rgba(0,0,0,0.2)”}}/>
+</div>
+</div>
+{!f.isWG && (
+<>
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:10}}>
+<FI label=“Kaltmiete (€)” value={f.rent} onChange={v=>set(“rent”,v)} type=“number”/>
+<FI label=“Mieter” value={f.tenant} onChange={v=>set(“tenant”,v)}/>
+</div>
+<div>
+<label style={{fontSize:11,color:”#888”,display:“block”,marginBottom:4,fontWeight:600}}>Möblierung</label>
+<div style={{display:“flex”,gap:8}}>
+{[[“unmoebliert”,“Unmöbliert”],[“teilmoebliert”,“Teilmöbliert”],[“moebliert”,“Möbliert”]].map(([v,label])=>(
+<button key={v} onClick={()=>set(“moebliert”,v)} style={{flex:1,padding:“9px 6px”,borderRadius:10,border:`1.5px solid ${(f.moebliert||"unmoebliert")===v?"#1a1a2e":"#e0e0e0"}`,background:(f.moebliert||“unmoebliert”)===v?”#1a1a2e”:”#fff”,color:(f.moebliert||“unmoebliert”)===v?”#fff”:”#555”,fontSize:12,fontWeight:700,cursor:“pointer”}}>{label}</button>
+))}
+</div>
+</div>
+<FI label=“Mieter seit” value={f.tenantSince} onChange={v=>set(“tenantSince”,v)} type=“date”/>
+<NKSection nk={f.nebenkosten} onChange={nk=>setF(p=>({…p,nebenkosten:nk}))}/>
+</>
+)}
+{f.isWG && (
+<div style={{background:”#e3f2fd”,borderRadius:12,padding:“12px 14px”,fontSize:13,color:”#1565c0”}}>
+💡 Zimmer und deren Nebenkosten nach dem Speichern über „🏠 Zimmer” eintragen.
+</div>
+)}
+<div>
+<label style={{fontSize:11,color:”#888”,display:“block”,marginBottom:4,fontWeight:600}}>Notizen</label>
+<textarea value={f.notes} onChange={e=>set(“notes”,e.target.value)} rows={2}
+style={{width:“100%”,padding:“11px 12px”,border:“1.5px solid #e8e8e8”,borderRadius:10,fontSize:14,fontFamily:“inherit”,background:”#fafafa”,resize:“none”,boxSizing:“border-box”}}/>
+</div>
+</div>
+<div style={{display:“flex”,gap:10,marginTop:18}}>
+<Btn full onClick={onCancel}>Abbrechen</Btn>
+<Btn full primary onClick={()=>onSave(f)}>Speichern</Btn>
+</div>
+</div>
+);
+}
+
+// ─── DETAIL VIEW (als Bottom-Sheet auf Mobile) ────────────────────────────────
+function DetailSheet({prop,onClose,onEdit,onDelete,onToggle,onFinance,onWG}) {
+const [section,setSection] = useState(“info”); // info | zahlungen
+const rent = effRent(prop);
+const nkMo = effNKMonat(prop);
+const c = calcFin(prop.finance||BLANK_FIN, rent);
+
+const nk = prop.isWG
+? prop.wgZimmer.reduce((s,z)=>{
+const zm=z.nebenkosten||{};
+return {hausgeld:s.hausgeld+nkMonat(zm.hausgeld,zm.hausgeldTurnus),strom:s.strom+nkMonat(zm.strom,zm.stromTurnus),internet:s.internet+nkMonat(zm.internet,zm.internetTurnus)};
+},{hausgeld:0,strom:0,internet:0})
+: {
+hausgeld: nkMonat((prop.nebenkosten||{}).hausgeld,(prop.nebenkosten||{}).hausgeldTurnus),
+strom:    nkMonat((prop.nebenkosten||{}).strom,(prop.nebenkosten||{}).stromTurnus),
+internet: nkMonat((prop.nebenkosten||{}).internet,(prop.nebenkosten||{}).internetTurnus),
+};
+
+return (
+<div style={{position:“fixed”,inset:0,background:“rgba(10,10,20,0.45)”,zIndex:999,display:“flex”,alignItems:“flex-end”,backdropFilter:“blur(2px)”}}
+onClick={onClose}>
+<div onClick={e=>e.stopPropagation()} style={{background:”#fff”,borderRadius:“20px 20px 0 0”,width:“100%”,maxWidth:600,margin:“0 auto”,maxHeight:“88vh”,display:“flex”,flexDirection:“column”,boxShadow:“0 -8px 40px rgba(0,0,0,0.2)”}}>
+{/* Handle */}
+<div style={{display:“flex”,justifyContent:“center”,padding:“10px 0 0”}}>
+<div style={{width:40,height:4,borderRadius:2,background:”#ddd”}}/>
+</div>
+
+```
+    {/* Header */}
+    <div style={{padding:"12px 18px 10px",borderBottom:"1px solid #f0f0f0"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,fontWeight:700,color:"#1a1a2e"}}>{prop.name}</div>
+          <div style={{fontSize:12,color:"#aaa",marginTop:2}}>{prop.address}, {prop.city}</div>
+          <div style={{display:"flex",gap:6,marginTop:6}}>
+            <Badge s={prop.status}/>
+            {prop.isWG&&<span style={{background:"#e3f2fd",color:"#1565c0",borderRadius:20,padding:"3px 10px",fontSize:11,fontWeight:700}}>WG</span>}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={onEdit} style={{background:"#f8f8fb",border:"none",borderRadius:10,padding:"8px 10px",cursor:"pointer",fontSize:16}}>✏️</button>
+          <button onClick={onDelete} style={{background:"#fff3f0",border:"none",borderRadius:10,padding:"8px 10px",cursor:"pointer",fontSize:16}}>🗑️</button>
+        </div>
+      </div>
+      {/* Action Buttons */}
+      <div style={{display:"flex",gap:8,marginTop:10,overflowX:"auto"}}>
+        {prop.isWG&&<button onClick={onWG} style={{flexShrink:0,padding:"8px 14px",borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>🏠 Zimmer</button>}
+        <button onClick={onFinance} style={{flexShrink:0,padding:"8px 14px",borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>📊 Rentabilität</button>
+      </div>
+    </div>
+
+    {/* Tabs */}
+    <div style={{display:"flex",background:"#f8f8fb",padding:"6px 18px",gap:6,borderBottom:"1px solid #f0f0f0"}}>
+      {[["info","Info"],["zahlungen","Zahlungen"]].map(([t,label])=>(
+        <button key={t} onClick={()=>setSection(t)} style={{padding:"7px 16px",borderRadius:9,border:"none",cursor:"pointer",fontSize:13,fontWeight:700,background:section===t?"#1a1a2e":"transparent",color:section===t?"#fff":"#888"}}>
+          {label}
+        </button>
+      ))}
+    </div>
+
+    {/* Content */}
+    <div style={{overflowY:"auto",padding:"14px 18px 24px",flex:1}}>
+      {section==="info" && (
+        <>
+          {/* KPIs */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+            {[
+              {l:"Größe",v:`${prop.size} m²`},
+              {l:prop.isWG?"Zimmer":"Zimmeranzahl",v:prop.isWG?`${prop.wgZimmer.filter(z=>z.status==="vermietet").length}/${prop.wgZimmer.length} WG`:prop.rooms},
+              {l:"Kaltmiete/Mo",v:fmt(rent),c:"#2e7d32"},
+              {l:"Cashflow/Mo",v:fmt(c.cf,true),c:c.cf>=0?"#2e7d32":"#c62828"},
+            ].map(({l,v,c:col})=>(
+              <div key={l} style={{background:"#f8f8fb",borderRadius:11,padding:"12px 13px"}}>
+                <div style={{fontSize:10,color:"#aaa",marginBottom:3}}>{l}</div>
+                <div style={{fontSize:15,fontWeight:800,color:col||"#1a1a2e"}}>{v}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* NK */}
+          <div style={{background:"#f8f8fb",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
+            <div style={{fontWeight:700,fontSize:12,color:"#1a1a2e",marginBottom:10}}>⚡ Nebenkosten / Monat</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr",gap:7}}>
+              {[["🏢","Hausgeld",nk.hausgeld],["⚡","Strom",nk.strom],["📡","Internet",nk.internet],["🏛️","Grundst.",nk.grundsteuer||0],["Σ","Gesamt",nk.hausgeld+nk.strom+nk.internet+(nk.grundsteuer||0),true]].map(([icon,label,val,bold])=>(
+                <div key={label} style={{background:"#fff",borderRadius:9,padding:"8px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:10,color:"#aaa"}}>{icon}</div>
+                  <div style={{fontSize:13,fontWeight:bold?800:600,color:bold?"#1a1a2e":"#555"}}>{fmt(val)}</div>
+                  <div style={{fontSize:9,color:"#bbb"}}>{label}</div>
+                </div>
+              ))}
+            </div>
+            {/* Jährliche Posten anzeigen */}
+            {!prop.isWG && (
+              <div style={{marginTop:8,display:"flex",flexWrap:"wrap",gap:5}}>
+                {[["hausgeld","hausgeldTurnus","Hausgeld"],["strom","stromTurnus","Strom"],["internet","internetTurnus","Internet"]].map(([k,t,label])=>{
+                  const raw = parseFloat((prop.nebenkosten||{})[k])||0;
+                  const turnus = (prop.nebenkosten||{})[t];
+                  if(!raw||turnus!=="jaehrlich") return null;
+                  return <span key={k} style={{fontSize:10,background:"#e3f2fd",color:"#1565c0",borderRadius:6,padding:"2px 8px"}}>{label}: {fmt(raw)}/Jahr → {fmt(raw/12)}/Mo</span>;
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* WG */}
+          {prop.isWG && (
+            <div style={{background:"#e3f2fd",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:12,color:"#1565c0",marginBottom:10}}>🏠 WG-Zimmer</div>
+              <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                {prop.wgZimmer.map(z=>{
+                  const zNKmo = nkMonat(z.nebenkosten?.hausgeld,z.nebenkosten?.hausgeldTurnus)+nkMonat(z.nebenkosten?.strom,z.nebenkosten?.stromTurnus)+nkMonat(z.nebenkosten?.internet,z.nebenkosten?.internetTurnus);
+                  const zR = parseFloat(z.rent)||0;
+                  const mb = z.moebliert==="moebliert"?"möbl.":z.moebliert==="teilmoebliert"?"teilm.":"unmöbl.";
+                  return (
+                    <div key={z.id} style={{background:"#fff",borderRadius:10,padding:"10px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:13}}>{z.name} <span style={{fontSize:10,color:"#aaa",fontWeight:400}}>{z.size&&`${z.size}m²`} · {mb}</span></div>
+                        <div style={{fontSize:11,color:z.status==="vermietet"?"#555":"#e65100",marginTop:2}}>
+                          {z.status==="vermietet"?(z.tenant||"Vermietet"):"\u25cb Leer"}
+                          {z.tenantSince&&<span style={{color:"#aaa"}}> · {new Date(z.tenantSince).toLocaleDateString("de-DE")}</span>}
+                        </div>
+                        {z.status==="vermietet"&&<div style={{display:"flex",gap:2,marginTop:5}}>{MONTHS.map(m=><Dot key={m} ok={!!z.payments?.find(x=>x.month===m)?.rent}/>)}</div>}
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontWeight:800,color:z.status==="vermietet"?"#2e7d32":"#e65100"}}>{fmt(zR)}</div>
+                        <div style={{fontSize:10,color:"#aaa"}}>NK: {fmt(zNKmo)}</div>
+                        <div style={{fontSize:11,fontWeight:700}}>∑ {fmt(zR+zNKmo)}</div>
+                        <div style={{marginTop:3}}>
+                          <span style={{fontSize:9,fontWeight:700,background:(z.nkModus||"pauschale")==="abrechnung"?"#fff3e0":"#e3f2fd",color:(z.nkModus||"pauschale")==="abrechnung"?"#e65100":"#1565c0",borderRadius:6,padding:"2px 7px"}}>
+                            {(z.nkModus||"pauschale")==="abrechnung"?"Abrechn.":"Pauschale"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:10,background:"rgba(255,255,255,0.7)",borderRadius:10,padding:"10px 12px"}}>
+                {[["Kaltmiete",rent,"#2e7d32"],["NK/Mo",nkMo,"#e65100"],["Warmmiete",rent+nkMo,"#1a1a2e"]].map(([l,v,c])=>(
+                  <div key={l} style={{textAlign:"center"}}>
+                    <div style={{fontSize:9,color:"#888"}}>{l}</div>
+                    <div style={{fontSize:14,fontWeight:800,color:c}}>{fmt(v)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* KD / NUK Kurzübersicht */}
+          {prop.finance && (prop.finance.kaufpreis > 0 || prop.finance.hausgeldNichtUmlegbar > 0) && (
+            <div style={{background:"#f8f8fb",borderRadius:12,padding:"13px 14px",marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:12,color:"#1a1a2e",marginBottom:10}}>📋 Kosten & Rentabilität</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:7,marginBottom:10}}>
+                {[
+                  {l:"Kapitaldienst",abbr:"KD",v:fmt(c.kd),col:"#c62828"},
+                  {l:"Nicht umlegb.",abbr:"NUK",v:fmt(c.nuk),col:"#e65100"},
+                  {l:"Cashflow",abbr:"CF",v:fmt(c.cf,true),col:c.cf>=0?"#2e7d32":"#c62828"},
+                ].map(({l,abbr,v,col})=>(
+                  <div key={abbr} style={{background:"#fff",borderRadius:9,padding:"9px 10px",textAlign:"center"}}>
+                    <div style={{fontSize:9,color:"#bbb",fontWeight:700}}>{abbr}</div>
+                    <div style={{fontSize:13,fontWeight:800,color:col}}>{v}</div>
+                    <div style={{fontSize:9,color:"#aaa"}}>{l}</div>
+                  </div>
+                ))}
+              </div>
+              {/* NUK-Aufschlüsselung */}
+              {c.nuk > 0 && (
+                <div style={{borderTop:"1px solid #eee",paddingTop:8}}>
+                  <div style={{fontSize:11,color:"#aaa",marginBottom:6}}>NUK-Aufschlüsselung / Mo</div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                    {[
+                      ["🏢","Hausgeld n.u.",prop.finance.hausgeldNichtUmlegbar],
+
+                    ].filter(([,,v])=>v>0).map(([icon,label,val])=>(
+                      <span key={label} style={{fontSize:11,background:"#fff3e0",color:"#e65100",borderRadius:7,padding:"3px 9px",fontWeight:600}}>
+                        {icon} {label}: {fmt(val)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <button onClick={onFinance} style={{width:"100%",marginTop:10,padding:"9px",borderRadius:10,border:"1.5px solid #e0e0e0",background:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",color:"#1a1a2e"}}>
+                📊 Details & bearbeiten
+              </button>
+            </div>
+          )}
+
+          {/* Mieter (normal) */}
+          {!prop.isWG && prop.tenant && (
+            <div style={{background:"#f8f8fb",borderRadius:12,padding:"12px 14px",marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:12,color:"#1a1a2e",marginBottom:8}}>👤 Mieter</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div><div style={{fontSize:10,color:"#aaa"}}>Name</div><div style={{fontWeight:600}}>{prop.tenant}</div></div>
+                <div><div style={{fontSize:10,color:"#aaa"}}>Seit</div><div style={{fontWeight:600}}>{prop.tenantSince?new Date(prop.tenantSince).toLocaleDateString("de-DE"):"—"}</div></div>
+                <div><div style={{fontSize:10,color:"#aaa"}}>Mietdauer</div><div style={{fontWeight:600}}>{prop.tenantSince?`${Math.floor((new Date()-new Date(prop.tenantSince))/1000/60/60/24/30)} Mo.`:"—"}</div></div>
+              </div>
+            </div>
+          )}
+
+          {prop.parkplatz?.aktiv&&(
+            <div style={{background:"#e3f2fd",borderRadius:11,padding:"11px 14px",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:13,color:"#1565c0"}}>🚗 Parkplatz</div>
+                <div style={{fontSize:11,color:"#888",marginTop:2}}>Zusätzliche Mieteinnahme</div>
+              </div>
+              <div style={{fontWeight:800,fontSize:16,color:"#1565c0"}}>{fmt(parseFloat(prop.parkplatz.miete)||0)}/Mo</div>
+            </div>
+          )}
+          {prop.notes&&<div style={{background:"#fffde7",borderRadius:11,padding:"11px 14px",borderLeft:"3px solid #fbc02d",fontSize:13,color:"#555"}}>{prop.notes}</div>}
+        </>
+      )}
+
+      {section==="zahlungen" && (
+        <div>
+          <div style={{fontWeight:700,fontSize:13,color:"#1a1a2e",marginBottom:12}}>💶 Zahlungen</div>
+          {prop.isWG ? (
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              {prop.wgZimmer.filter(z=>z.status==="vermietet").map(z=>(
+                <div key={z.id} style={{background:"#f8f8fb",borderRadius:12,padding:"11px 13px"}}>
+                  <div style={{fontWeight:700,fontSize:13,marginBottom:9}}>{z.name} · {z.tenant||"Mieter"} · {fmt(parseFloat(z.rent)||0)}</div>
+                  <div style={{display:"flex",gap:7,overflowX:"auto"}}>
+                    {MONTHS.map(m=>{
+                      const pay=z.payments?.find(x=>x.month===m);
+                      return (
+                        <div key={m} style={{flexShrink:0,borderRadius:10,overflow:"hidden",border:"1.5px solid #e8e8e8",minWidth:88}}>
+                          <div style={{background:"#f0f0f5",padding:"5px 10px",fontSize:11,fontWeight:700,color:"#555",textAlign:"center"}}>{ML[m]}</div>
+                          {[["rent","Miete"],["nebenkosten","NK"]].map(([key,label])=>(
+                            <div key={key} onClick={()=>onToggle(prop.id,m,key,z.id)}
+                              style={{padding:"7px 10px",cursor:"pointer",display:"flex",gap:4,alignItems:"center",background:pay?.[key]?"#f1fbf1":"#fffaf8",borderTop:"1px solid #eee"}}>
+                              <span>{pay?.[key]?"✅":"⏳"}</span>
+                              <span style={{fontSize:11,color:pay?.[key]?"#388e3c":"#e65100"}}>{label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{display:"flex",gap:8,overflowX:"auto"}}>
+              {MONTHS.map(m=>{
+                const p=prop.payments?.find(x=>x.month===m);
+                return (
+                  <div key={m} style={{flexShrink:0,borderRadius:12,overflow:"hidden",border:"1.5px solid #e8e8e8",minWidth:110}}>
+                    <div style={{background:"#f8f8fb",padding:"8px 12px",fontSize:12,fontWeight:700,color:"#555",textAlign:"center"}}>{ML[m]} 25</div>
+                    {[["rent","Miete"],["nebenkosten","Nebenkosten"]].map(([key,label])=>(
+                      <div key={key} onClick={()=>onToggle(prop.id,m,key)}
+                        style={{padding:"10px 12px",cursor:"pointer",display:"flex",gap:7,alignItems:"center",background:p?.[key]?"#f1fbf1":"#fffaf8",borderTop:"1px solid #eee"}}>
+                        <span style={{fontSize:16}}>{p?.[key]?"✅":"⏳"}</span>
+                        <span style={{fontSize:12,color:p?.[key]?"#388e3c":"#e65100"}}>{label}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div style={{fontSize:11,color:"#ccc",marginTop:8,textAlign:"center"}}>Tippen zum Umschalten</div>
+        </div>
+      )}
+    </div>
+  </div>
+</div>
+```
+
+);
+}
+
+// ─── STORAGE ──────────────────────────────────────────────────────────────────
+const STORAGE_KEY = “borgmann_props_v1”;
+function loadProps() {
+try { const s=localStorage.getItem(STORAGE_KEY); if(s) return JSON.parse(s); } catch(e){}
+return initProps;
+}
+function saveProps(data) {
+try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e){}
+}
+
+// ─── APP ──────────────────────────────────────────────────────────────────────
+export default function App() {
+const [props,setPropsRaw] = useState(loadProps);
+const [sel,setSel] = useState(null);
+const [showForm,setShowForm] = useState(false);
+const [editP,setEditP] = useState(null);
+const [showFin,setShowFin] = useState(false);
+const [showWG,setShowWG] = useState(false);
+const [search,setSearch] = useState(””);
+const [showPortfolio,setShowPortfolio] = useState(false);
+const [savedFlash,setSavedFlash] = useState(false);
+
+function setProps(updater) {
+setPropsRaw(prev => {
+const next = typeof updater === “function” ? updater(prev) : updater;
+saveProps(next);
+setSavedFlash(true);
+setTimeout(() => setSavedFlash(false), 1800);
+return next;
+});
+}
+
+const selProp = sel ? props.find(p=>p.id===sel) : null;
+const filtered = props.filter(p=>
+p.name.toLowerCase().includes(search.toLowerCase())||
+p.city.toLowerCase().includes(search.toLowerCase())||
+(p.tenant||””).toLowerCase().includes(search.toLowerCase())||
+p.wgZimmer.some(z=>(z.tenant||””).toLowerCase().includes(search.toLowerCase()))
+);
+
+const totRent    = props.reduce((s,p)=>s+effRent(p),0);
+const totParking = props.reduce((s,p)=>s+parkingRent(p),0);
+const totNK      = props.reduce((s,p)=>s+effNKMonat(p),0);
+const totEmpty   = props.filter(p=>!p.isWG&&p.status===“leer”).length
++ props.reduce((s,p)=>s+(p.isWG?p.wgZimmer.filter(z=>z.status===“leer”).length:0),0);
+const totCF      = props.reduce((s,p)=>{const r=effRent(p);return s+(p.finance?calcFin(p.finance,r).cf:0);},0);
+const totKP      = props.reduce((s,p)=>s+(p.finance?.kaufpreis||0),0);
+const totEK      = props.reduce((s,p)=>s+(p.finance?.eigenkapital||0),0);
+const totTilg    = props.reduce((s,p)=>{if(!p.finance)return s;const c=calcFin(p.finance,0);return s+c.tilg;},0);
+const totZins    = props.reduce((s,p)=>{if(!p.finance)return s;const c=calcFin(p.finance,0);return s+c.zins;},0);
+const totKD      = props.reduce((s,p)=>{if(!p.finance)return s;const c=calcFin(p.finance,0);return s+c.kd;},0);
+
+function togglePayment(propId,month,key,zimmerId) {
+setProps(ps=>ps.map(p=>{
+if(p.id!==propId) return p;
+if(zimmerId){
+return {…p,wgZimmer:p.wgZimmer.map(z=>{
+if(z.id!==zimmerId) return z;
+const pays=(z.payments||[]).slice();
+const idx=pays.findIndex(x=>x.month===month);
+if(idx===-1) pays.push({month,rent:key===“rent”,nebenkosten:key===“nebenkosten”});
+else pays[idx]={…pays[idx],[key]:!pays[idx][key]};
+return {…z,payments:pays};
+})};
+}
+const pays=(p.payments||[]).slice();
+const idx=pays.findIndex(x=>x.month===month);
+if(idx===-1) pays.push({month,rent:key===“rent”,nebenkosten:key===“nebenkosten”,date:new Date().toISOString().slice(0,10)});
+else pays[idx]={…pays[idx],[key]:!pays[idx][key]};
+return {…p,payments:pays};
+}));
+}
+
+function saveProp(form) {
+const parsed={…form,
+rent:parseFloat(form.rent)||0,size:parseFloat(form.size)||0,rooms:parseFloat(form.rooms)||0,
+nebenkosten:{…form.nebenkosten},
+parkplatz:{aktiv:!!form.parkplatz?.aktiv,miete:parseFloat(form.parkplatz?.miete)||0}};
+if(editP){
+setProps(ps=>ps.map(p=>p.id===editP.id?{…editP,…parsed}:p));
+} else {
+setProps(ps=>[…ps,{…parsed,id:Date.now(),payments:[],wgZimmer:[],finance:{…BLANK_FIN}}]);
+}
+setShowForm(false);setEditP(null);
+}
+
+return (
+<div style={{fontFamily:”‘DM Sans’,‘Segoe UI’,sans-serif”,background:”#f2f2f7”,minHeight:“100vh”,maxWidth:600,margin:“0 auto”,position:“relative”}}>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=DM+Sans:wght@400;600;800&display=swap" rel="stylesheet"/>
+
+```
+  {/* Header */}
+  <div style={{background:"#1a1a2e",color:"#fff",padding:"16px 18px",display:"flex",alignItems:"center",position:"sticky",top:0,zIndex:100,boxShadow:"0 2px 12px rgba(0,0,0,0.2)"}}>
+    <span style={{fontSize:18,fontFamily:"'Playfair Display',serif",fontWeight:700}}>🏠 Mietenmanagement Borgmann</span>
+    <div style={{flex:1}}/>
+    {savedFlash && (
+      <span style={{fontSize:11,color:"#a5d6a7",fontWeight:700,marginRight:8,animation:"fadein .3s"}}>✓ gespeichert</span>
+    )}
+    <button onClick={()=>setShowPortfolio(true)} style={{background:"rgba(255,255,255,0.12)",border:"none",borderRadius:10,padding:"8px 12px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",marginRight:8}}>📊</button>
+    <button onClick={()=>{setEditP(null);setShowForm(true);}} style={{background:"rgba(255,255,255,0.15)",border:"none",borderRadius:10,padding:"8px 14px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ Objekt</button>
+  </div>
+
+  {/* Stats */}
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,padding:"14px 14px 0"}}>
+    {[
+      {l:"Mieteinnahmen",v:fmt(totRent-totParking),icon:"💶",border:"#1a1a2e"},
+      ...(totParking>0?[{l:"davon Parkplatz",v:fmt(totParking),icon:"🚗",border:"#1565c0"}]:[]),
+      {l:"Nebenkosten/Mo",v:fmt(totNK),icon:"⚡",border:"#e65100"},
+      {l:"Ges. Cashflow",v:fmt(totCF,true),icon:"📈",border:totCF>=0?"#2e7d32":"#c62828",col:totCF>=0?"#2e7d32":"#c62828"},
+    ].map(({l,v,icon,border,warn,col})=>(
+      <div key={l} style={{background:"#fff",borderRadius:13,padding:"12px 14px",boxShadow:"0 1px 6px rgba(0,0,0,0.06)",borderLeft:`4px solid ${border}`}}>
+        <div style={{fontSize:17}}>{icon}</div>
+        <div style={{fontSize:17,fontWeight:800,color:col||(warn?"#e64a19":"#1a1a2e"),marginTop:3}}>{v}</div>
+        <div style={{fontSize:10,color:"#aaa",marginTop:1}}>{l}</div>
+      </div>
+    ))}
+  </div>
+
+  {/* Search */}
+  <div style={{padding:"12px 14px 0"}}>
+    <input placeholder="🔍  Suchen…" value={search} onChange={e=>setSearch(e.target.value)}
+      style={{width:"100%",padding:"12px 14px",border:"none",borderRadius:13,fontSize:14,background:"#fff",boxShadow:"0 1px 6px rgba(0,0,0,0.06)",boxSizing:"border-box",outline:"none",fontFamily:"inherit"}}/>
+  </div>
+
+  {/* Property List */}
+  <div style={{padding:"10px 14px 90px",display:"flex",flexDirection:"column",gap:9}}>
+    {filtered.map(p=>{
+      const r=effRent(p);
+      const nkMo=effNKMonat(p);
+      const overdue=p.isWG
+        ?p.wgZimmer.some(z=>z.status==="vermietet"&&!z.payments?.find(x=>x.month===MONTHS[MONTHS.length-1])?.rent)
+        :p.status==="vermietet"&&!p.payments?.find(x=>x.month===MONTHS[MONTHS.length-1])?.rent;
+      const cf=p.finance?calcFin(p.finance,r).cf:null;
+      return (
+        <div key={p.id} onClick={()=>setSel(p.id)}
+          style={{background:"#fff",borderRadius:14,padding:"14px 15px",cursor:"pointer",boxShadow:"0 1px 8px rgba(0,0,0,0.06)",borderLeft:`4px solid ${overdue?"#ff7043":"#e0e0e0"}`,WebkitTapHighlightColor:"transparent"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <div style={{fontWeight:700,fontSize:15,color:"#1a1a2e"}}>{p.name}</div>
+              <div style={{fontSize:12,color:"#aaa",marginTop:2}}>{p.city} · {p.size} m²</div>
+            </div>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"flex-end"}}>
+              <Badge s={p.status}/>
+              {p.isWG&&<span style={{background:"#e3f2fd",color:"#1565c0",borderRadius:20,padding:"3px 9px",fontSize:10,fontWeight:700}}>WG</span>}
+            </div>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10}}>
+            <div style={{fontSize:12,color:"#888"}}>
+              {p.isWG?`${p.wgZimmer.filter(z=>z.status==="vermietet").length}/${p.wgZimmer.length} Zimmer`:(p.tenant||<span style={{color:"#ccc"}}>Kein Mieter</span>)}
+            </div>
+            <div style={{textAlign:"right"}}>
+              <span style={{fontWeight:800,fontSize:15,color:"#1a1a2e"}}>{fmt(r)}</span>
+              {nkMo>0&&<span style={{fontSize:11,color:"#aaa"}}> +NK {fmt(nkMo)}</span>}
+              {cf!==null&&<div style={{fontSize:11,fontWeight:700,color:cf>=0?"#4caf50":"#f44336"}}>CF: {fmt(cf,true)}</div>}
+            </div>
+          </div>
+          {(p.status==="vermietet"||p.isWG)&&(
+            <div style={{display:"flex",gap:3,marginTop:8}}>
+              {MONTHS.map(m=>{
+                const ok=p.isWG?p.wgZimmer.filter(z=>z.status==="vermietet").every(z=>z.payments?.find(x=>x.month===m)?.rent):!!p.payments?.find(x=>x.month===m)?.rent;
+                return <Dot key={m} ok={ok}/>;
+              })}
+            </div>
+          )}
+        </div>
+      );
+    })}
+    {filtered.length===0&&<div style={{textAlign:"center",color:"#ccc",padding:40,fontSize:15}}>Keine Objekte gefunden</div>}
+  </div>
+
+  {/* Modals */}
+  {showForm&&(
+    <Modal onClose={()=>{setShowForm(false);setEditP(null);}} title={editP?"Objekt bearbeiten":"Neues Objekt"}>
+      <PropForm initial={editP} onSave={saveProp} onCancel={()=>{setShowForm(false);setEditP(null);}}/>
+    </Modal>
+  )}
+  {selProp&&!showFin&&!showWG&&!showForm&&(
+    <DetailSheet
+      prop={selProp}
+      onClose={()=>setSel(null)}
+      onEdit={()=>{setEditP(selProp);setShowForm(true);}}
+      onDelete={()=>{setProps(ps=>ps.filter(p=>p.id!==selProp.id));setSel(null);}}
+      onToggle={togglePayment}
+      onFinance={()=>setShowFin(true)}
+      onWG={()=>setShowWG(true)}
+    />
+  )}
+  {showPortfolio&&(
+    <Modal onClose={()=>setShowPortfolio(false)} title="📊 Portfolio-Übersicht">
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+        {[
+          {l:"Gesamtkaufpreis",v:fmt(totKP),icon:"🏢",col:"#1a1a2e"},
+          {l:"Eigenkapital gesamt",v:fmt(totEK),icon:"💰",col:"#1565c0"},
+          {l:"Fremdkapital gesamt",v:fmt(totKP-totEK),icon:"🏦",col:"#c62828"},
+          {l:"EK-Quote",v:totKP>0?(totEK/totKP*100).toFixed(1)+" %":"—",icon:"📐",col:"#7b1fa2"},
+          {l:"Tilgung gesamt/Mo",v:fmt(totTilg),icon:"📉",col:"#2e7d32"},
+          {l:"Zinsen gesamt/Mo",v:fmt(totZins),icon:"📈",col:"#c62828"},
+          {l:"Kapitaldienst/Mo",v:fmt(totKD),icon:"🔁",col:"#c62828"},
+          {l:"Mieteinnahmen/Mo",v:fmt(totRent),icon:"💶",col:"#2e7d32"},
+          ...(totParking>0?[{l:"davon Parkplätze",v:fmt(totParking),icon:"🚗",col:"#1565c0"}]:[]),
+          {l:"Ges. Cashflow/Mo",v:fmt(totCF,true),icon:"📊",col:totCF>=0?"#2e7d32":"#c62828"},
+        ].map(({l,v,icon,col})=>(
+          <div key={l} style={{background:"#f8f8fb",borderRadius:12,padding:"12px 14px",borderLeft:`3px solid ${col}`}}>
+            <div style={{fontSize:13}}>{icon}</div>
+            <div style={{fontSize:16,fontWeight:800,color:col,marginTop:3}}>{v}</div>
+            <div style={{fontSize:10,color:"#aaa",marginTop:2}}>{l}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{fontWeight:700,fontSize:12,color:"#aaa",textTransform:"uppercase",letterSpacing:.5,marginBottom:10}}>Objekte im Überblick</div>
+      {props.map(p=>{
+        const r=effRent(p); const fin=p.finance||BLANK_FIN;
+        const c=calcFin(fin,r);
+        return(
+          <div key={p.id} style={{background:"#fff",borderRadius:12,padding:"12px 14px",marginBottom:8,borderLeft:`3px solid ${c.cf>=0?"#2e7d32":"#c62828"}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+              <span style={{fontWeight:700,fontSize:14}}>{p.name}</span>
+              <span style={{fontSize:12,fontWeight:700,color:c.cf>=0?"#2e7d32":"#c62828"}}>CF: {fmt(c.cf,true)}</span>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:6}}>
+              {[
+                ["KP",fmt(fin.kaufpreis),"#1a1a2e"],
+                ["EK",fmt(fin.eigenkapital),"#1565c0"],
+                ["Tilg/Mo",fmt(c.tilg),"#2e7d32"],
+                ["Zins/Mo",fmt(c.zins),"#c62828"],
+              ].map(([label,val,col])=>(
+                <div key={label} style={{textAlign:"center",background:"#f8f8fb",borderRadius:8,padding:"7px 4px"}}>
+                  <div style={{fontSize:9,color:"#aaa"}}>{label}</div>
+                  <div style={{fontSize:12,fontWeight:800,color:col}}>{val}</div>
+                </div>
+              ))}
+            </div>
+            {p.parkplatz?.aktiv&&<div style={{marginTop:6,fontSize:11,color:"#1565c0",background:"#e3f2fd",borderRadius:7,padding:"3px 9px",display:"inline-block"}}>🚗 Parkplatz: {fmt(p.parkplatz.miete)}/Mo</div>}
+          </div>
+        );
+      })}
+      <div style={{marginTop:16,borderTop:"1px solid #f0f0f0",paddingTop:14}}>
+        <button onClick={()=>{if(window.confirm("Alle Daten zurücksetzen? Dies kann nicht rückgängig gemacht werden.")){localStorage.removeItem("borgmann_props_v1");window.location.reload();}}} style={{width:"100%",padding:"10px",borderRadius:10,border:"1.5px solid #ffd0c8",background:"#fff3f0",color:"#c62828",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+          🗑️ Alle Daten zurücksetzen
+        </button>
+        <div style={{textAlign:"center",fontSize:10,color:"#ccc",marginTop:6}}>Daten werden lokal im Browser gespeichert</div>
+      </div>
+    </Modal>
+  )}
+  {showFin&&selProp&&(
+    <FinanceModal prop={selProp} onSave={finance=>setProps(ps=>ps.map(p=>p.id===selProp.id?{...p,finance}:p))} onClose={()=>setShowFin(false)}/>
+  )}
+  {showWG&&selProp?.isWG&&(
+    <WGModal prop={selProp} onSave={zimmer=>setProps(ps=>ps.map(p=>p.id===selProp.id?{...p,wgZimmer:zimmer}:p))} onClose={()=>setShowWG(false)}/>
+  )}
+</div>
+```
+
+);
+}
+
+const root = ReactDOM.createRoot(document.getElementById(‘root’));
+root.render(<App/>);
+</script>
+
+</body>
+</html>
